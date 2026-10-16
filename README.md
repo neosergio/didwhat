@@ -1,0 +1,99 @@
+# didwhat
+
+**What did I do?** Your commits across every git repository under a folder,
+grouped by day, in one command.
+
+```
+didwhat --since 2026-09-15 ~/code/client
+```
+
+```markdown
+## 2026-10-14
+
+### risk-engine
+
+- 10:12 `57a5e82` feat: record when an invoice enters and leaves scope — *past-due-history*
+  - etl/scope.py
+  - web/src/InvoiceHistory.tsx
+
+### web
+
+- 18:05 `e6c97e3` fix: keep the worklist view when coming back from an invoice — *main*
+
+## Not pushed or not committed
+
+### web — `main...origin/main [ahead 1]`
+
+- `M` src/worklist.tsx
+```
+
+It exists for one situation: you work on several machines, some of them not
+yours (a client's laptop, an employer's), and at the end of the week you need to
+know what you actually did there — for a standup, a timesheet, or a worklog.
+
+## What it reports
+
+For every repository it finds below the folders you give it:
+
+- **Your commits** on every branch, remote and tag, newest day first, with the
+  branch they are on and the files they touched.
+- **With `--merges`, merges by other people**, so you see what landed while
+  you worked. Off by default: in a busy repository they drown out your own
+  work.
+- **Work that has not left the machine:** uncommitted changes and branches that
+  are ahead of their remote.
+
+Days and times are in the local time zone of the machine that runs it, so a
+commit made at 23:30 is listed on the day it was made, not the UTC day.
+
+A commit counts on the day it was **authored**. Rebasing a branch today does not
+bring its old commits into today's report, and the copies a rebase leaves on
+other branches are listed once. A date with no time, like `2026-09-15`, means
+the whole day: plain git would read it as that day at the current time and miss
+the morning.
+
+## Who counts as you
+
+By default, each repository's own `user.name` and `user.email`. That is usually
+right even when a client repository uses a corporate identity, because it is
+the identity you commit with there.
+
+When it is not, pass one or more `--author` patterns. Git matches them against
+both the name and the email:
+
+```
+didwhat --since "2 weeks ago" --author sergio@client.com --author "Sergio Infante"
+```
+
+## Options
+
+| Option | |
+|---|---|
+| `[PATHS]...` | Folders to scan. Default: the current folder |
+| `-s, --since` | Start of the period, anything git understands (`2026-09-15`, `"2 weeks ago"`). Default: `"7 days ago"` |
+| `-u, --until` | End of the period |
+| `-a, --author` | Who counts as you; repeatable |
+| `-f, --fetch` | `git fetch --all` every repository first. Never prompts for credentials: a fetch that needs them is reported as a warning |
+| `--depth` | Folder levels to search for repositories. Default: 3 |
+| `--json` | JSON instead of Markdown |
+| `-o, --output` | Write to a file instead of printing |
+| `--max-files` | Files listed per commit. Default: 8 |
+| `--merges` | Also list other people's merges, and your own merges that only bring another branch in |
+| `--no-status` | Leave out uncommitted and unpushed work |
+
+## Requirements
+
+Only `git` on the `PATH`. didwhat is a single binary with no runtime, which is
+the point: it has to run on machines where you cannot install Python or Node.
+
+## Install
+
+From source, with a Rust toolchain:
+
+```
+cargo install --git https://github.com/neosergio/didwhat
+```
+
+## License
+
+MIT
