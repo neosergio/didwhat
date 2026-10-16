@@ -17,11 +17,13 @@ struct Cli {
     #[arg(default_value = ".")]
     paths: Vec<PathBuf>,
 
-    /// Start of the period: anything git understands (2026-09-15, "2 weeks ago")
+    /// Start of the period: anything git understands (2026-09-15, yesterday,
+    /// "2 weeks ago"). Without a time of day it starts at midnight
     #[arg(short, long, default_value = "7 days ago")]
     since: String,
 
-    /// End of the period, same formats as --since
+    /// End of the period, same formats as --since. Without a time of day it
+    /// runs to the end of that day
     #[arg(short, long)]
     until: Option<String>,
 
@@ -46,7 +48,7 @@ struct Cli {
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
 
-    /// Files listed under each commit
+    /// Files listed under each commit; 0 leaves them out
     #[arg(long, default_value_t = 8, value_name = "N")]
     max_files: usize,
 
@@ -99,13 +101,18 @@ fn main() -> ExitCode {
     };
 
     eprintln!(
-        "didwhat: {} {} repositories…",
+        "didwhat: {} {} {}…",
         if cli.fetch {
             "fetching and reading"
         } else {
             "reading"
         },
-        repos.len()
+        repos.len(),
+        if repos.len() == 1 {
+            "repository"
+        } else {
+            "repositories"
+        }
     );
     let reports = thread::scope(|scope| {
         let handles: Vec<_> = repos

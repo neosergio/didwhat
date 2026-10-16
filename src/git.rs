@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde::Serialize;
 
@@ -26,6 +28,19 @@ pub struct Commit {
     pub is_merge: bool,
     pub files: Vec<String>,
     pub files_total: usize,
+    /// The copy of this commit that landed later, typically when its pull
+    /// request was squashed or cherry-picked into the main branch.
+    pub landed: Option<Landed>,
+}
+
+/// A later copy of a commit, with the same changes.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Landed {
+    pub hash: String,
+    pub short: String,
+    pub date: String,
+    pub time: String,
+    pub refs: Vec<String>,
 }
 
 /// What to ask `git log` for.
@@ -157,7 +172,102 @@ fn parse_record(record: &str, max_files: usize) -> Option<Commit> {
         subject: fields[8..].join(&FIELD.to_string()),
         files_total: files.len(),
         files: files.into_iter().take(max_files).collect(),
+        landed: None,
     })
+}
+
+/// The `git patch-id --stable` of a commit: the same for any two commits that
+/// make the same changes, whatever their message, date or parent.
+pub fn patch_id(repo: &Path, hash: &str) -> Option<String> {
+    let diff = run(
+        repo,
+        &["show", "--no-color", "--no-ext-diff", "--format=", hash],
+    )
+    .ok()?;
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["patch-id", "--stable"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child.stdin.take()?.write_all(diff.as_bytes()).ok()?;
+    let output = child.wait_with_output().ok()?;
+    let id = String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()?
+        .to_string();
+    Some(id)
+}
+
+/// Folds each commit that landed later as a copy, like a pull request squashed
+/// or cherry-picked into the main branch, into the commit it copies.
+///
+/// Without this every change is listed twice: once when it was made on its
+/// branch and once when it landed. A copy has a new author date, so
+/// `in_period` keeps both. They are told apart by `patch_id`, which only runs
+/// for commits by the same author that touch as many files, starting with the
+/// same one.
+pub fn fold_landed(
+    commits: Vec<Commit>,
+    patch_id: impl Fn(&Commit) -> Option<String>,
+) -> Vec<Commit> {
+    let key = |c: &Commit| {
+        (
+            c.author_email.clone(),
+            c.files_total,
+            c.files.first().cloned(),
+        )
+    };
+    let mut groups: HashMap<_, Vec<usize>> = HashMap::new();
+    for (i, commit) in commits.iter().enumerate() {
+        if !commit.is_merge && commit.files_total > 0 {
+            groups.entry(key(commit)).or_default().push(i);
+        }
+    }
+
+    let mut landed: HashMap<usize, Landed> = HashMap::new();
+    let mut folded = vec![false; commits.len()];
+    for mut group in groups.into_values().filter(|g| g.len() > 1) {
+        group.sort_by_key(|&i| commits[i].timestamp);
+        let ids: Vec<Option<String>> = group.iter().map(|&i| patch_id(&commits[i])).collect();
+        for (later, later_id) in group.iter().zip(&ids).skip(1) {
+            let Some(later_id) = later_id else { continue };
+            let original = group.iter().zip(&ids).find(|(&i, id)| {
+                id.as_ref() == Some(later_id)
+                    && i != *later
+                    && commits[i].timestamp < commits[*later].timestamp
+                    && !folded[i]
+                    && !landed.contains_key(&i)
+            });
+            if let Some((&i, _)) = original {
+                let copy = &commits[*later];
+                landed.insert(
+                    i,
+                    Landed {
+                        hash: copy.hash.clone(),
+                        short: copy.short.clone(),
+                        date: copy.date.clone(),
+                        time: copy.time.clone(),
+                        refs: copy.refs.clone(),
+                    },
+                );
+                folded[*later] = true;
+            }
+        }
+    }
+
+    commits
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !folded[*i])
+        .map(|(i, mut commit)| {
+            commit.landed = landed.remove(&i);
+            commit
+        })
+        .collect()
 }
 
 /// Whether a merge only brought another branch in (`Merge branch 'main' into
@@ -168,22 +278,29 @@ pub fn is_sync_merge(commit: &Commit) -> bool {
             || commit.subject.starts_with("Merge remote-tracking branch "))
 }
 
-/// A date with no time, like `2026-10-13`, made explicit: git would otherwise
-/// read it as that day at the current time of day, and drop the morning.
+/// Words that make a date more precise than a day, so it is left alone.
+const SUB_DAY: &[&str] = &[
+    "now", "noon", "midnight", "tea", "am", "pm", "hour", "hours", "minute", "minutes", "second",
+    "seconds",
+];
+
+/// A date with no time of day, like `2026-10-13`, `yesterday` or
+/// `2 weeks ago`, made to cover whole days: from the start of that day, or up
+/// to its end. Git would otherwise read it as that day at the current time of
+/// day, which drops the morning, and makes `--since yesterday --until
+/// yesterday` an empty instant.
 pub fn whole_day(date: &str, end_of_day: bool) -> String {
-    let is_date_only = date.len() == 10
-        && date.char_indices().all(|(i, c)| {
-            if i == 4 || i == 7 {
-                c == '-'
-            } else {
-                c.is_ascii_digit()
-            }
-        });
-    match (is_date_only, end_of_day) {
-        (true, false) => format!("{date} 00:00:00"),
-        (true, true) => format!("{date} 23:59:59"),
-        (false, _) => date.to_string(),
+    let trimmed = date.trim();
+    let has_time = trimmed.contains(':')
+        || trimmed.starts_with('@')
+        || trimmed
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| SUB_DAY.contains(&word.to_ascii_lowercase().as_str()));
+    if has_time || trimmed.is_empty() {
+        return date.to_string();
     }
+    let time = if end_of_day { "23:59:59" } else { "00:00:00" };
+    format!("{trimmed} {time}")
 }
 
 /// The period as Unix timestamps, resolved by git itself so every date format
@@ -337,8 +454,44 @@ mod tests {
     fn whole_day_pins_date_only_values_to_midnight() {
         assert_eq!(whole_day("2026-10-13", false), "2026-10-13 00:00:00");
         assert_eq!(whole_day("2026-10-13", true), "2026-10-13 23:59:59");
-        assert_eq!(whole_day("2 weeks ago", false), "2 weeks ago");
+        assert_eq!(whole_day("yesterday", false), "yesterday 00:00:00");
+        assert_eq!(whole_day("yesterday", true), "yesterday 23:59:59");
+        assert_eq!(whole_day("2 weeks ago", false), "2 weeks ago 00:00:00");
         assert_eq!(whole_day("2026-10-13 09:00", false), "2026-10-13 09:00");
+        assert_eq!(whole_day("3 hours ago", false), "3 hours ago");
+        assert_eq!(whole_day("now", true), "now");
+        assert_eq!(whole_day("@1792000000", false), "@1792000000");
+    }
+
+    fn change(hash: &str, timestamp: i64, files: &[&str]) -> Commit {
+        Commit {
+            hash: hash.into(),
+            short: hash.into(),
+            timestamp,
+            author_email: "ada@example.com".into(),
+            files: files.iter().map(|f| f.to_string()).collect(),
+            files_total: files.len(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fold_landed_merges_later_copies_into_the_original() {
+        // Newest first, as git log lists them. "b-landed" is "b" squashed into
+        // main; "c" touches the same file but makes a different change.
+        let commits = vec![
+            change("b-landed", 300, &["x.rs"]),
+            change("c", 250, &["x.rs"]),
+            change("b", 200, &["x.rs"]),
+            change("a", 100, &["y.rs"]),
+        ];
+        let patch = |c: &Commit| Some(c.hash.trim_end_matches("-landed").to_string());
+        let kept = fold_landed(commits, patch);
+
+        let hashes: Vec<&str> = kept.iter().map(|c| c.hash.as_str()).collect();
+        assert_eq!(hashes, ["c", "b", "a"]);
+        assert_eq!(kept[1].landed.as_ref().unwrap().hash, "b-landed");
+        assert!(kept[0].landed.is_none());
     }
 
     #[test]

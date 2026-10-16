@@ -92,11 +92,23 @@ fn commit_item(out: &mut String, commit: &Commit, mine: bool) {
     if !branches.is_empty() {
         let _ = write!(out, " — *{}*", branches.join(", "));
     }
+    if let Some(landed) = &commit.landed {
+        let _ = write!(out, " → landed as `{}`", landed.short);
+        let branches = branch_names(&landed.refs);
+        if !branches.is_empty() {
+            let _ = write!(out, " on *{}*", branches.join(", "));
+        }
+        if landed.date != commit.date {
+            let _ = write!(out, " {}", landed.date);
+        }
+        let _ = write!(out, " at {}", landed.time);
+    }
     out.push('\n');
     for file in &commit.files {
         let _ = writeln!(out, "  - {file}");
     }
-    if commit.files_total > commit.files.len() {
+    // With --max-files 0 the files are left out on purpose, not cut short.
+    if !commit.files.is_empty() && commit.files_total > commit.files.len() {
         let _ = writeln!(
             out,
             "  - … and {} more",

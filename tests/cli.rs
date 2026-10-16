@@ -199,3 +199,29 @@ fn writes_the_report_to_a_file() {
     let written = fs::read_to_string(sandbox.root().join("report.md")).unwrap();
     assert!(written.starts_with("# didwhat"));
 }
+
+#[test]
+fn a_squashed_pull_request_is_listed_once_with_where_it_landed() {
+    let sandbox = Sandbox::new();
+    let api = sandbox.repo("api");
+    sandbox.commit(&api, "base.txt", "init", ADA, "2026-03-01");
+    sandbox.git(&api, &["checkout", "-q", "-b", "topic"]);
+    sandbox.commit(&api, "a.txt", "feat: parse invoices", ADA, "2026-03-02");
+    sandbox.git(&api, &["checkout", "-q", "main"]);
+    sandbox.git(&api, &["merge", "-q", "--squash", "topic"]);
+    let status = sandbox
+        .command("git")
+        .arg("-C")
+        .arg(&api)
+        .args(["commit", "-q", "-m", "feat: parse invoices"])
+        .env("GIT_AUTHOR_DATE", "2026-03-03T12:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2026-03-03T12:00:00Z")
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let md = sandbox.didwhat(&["--since", "2026-03-02"]);
+    assert_eq!(md.matches("feat: parse invoices").count(), 1, "{md}");
+    assert!(md.contains("— *topic* → landed as `"), "{md}");
+    assert!(md.contains("on *main* 2026-03-03 at "), "{md}");
+}

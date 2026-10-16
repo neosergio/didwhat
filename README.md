@@ -48,9 +48,25 @@ commit made at 23:30 is listed on the day it was made, not the UTC day.
 
 A commit counts on the day it was **authored**. Rebasing a branch today does not
 bring its old commits into today's report, and the copies a rebase leaves on
-other branches are listed once. A date with no time, like `2026-09-15`, means
-the whole day: plain git would read it as that day at the current time and miss
-the morning.
+other branches are listed once.
+
+A pull request that is squashed or cherry-picked into the main branch leaves a
+second commit with the same changes and a new date. didwhat lists the change
+once, on the day you made it, and says where and when it landed:
+
+```markdown
+- 10:02 `a1a3ed8` feat: add form guidance to the tours — *fix/tour-wording* → landed as `75bd515` at 10:24
+```
+
+The two are matched by `git patch-id`, so a squash of a single commit is
+recognized whatever its message says. A squash of several commits makes
+changes no single commit made, and is listed on its own.
+
+A date with no time of day covers whole days. `2026-09-15`, `yesterday` or
+`2 weeks ago` start at midnight in `--since` and run to the end of the day in
+`--until`; plain git would read them at the current time of day, miss the
+morning, and make `--since yesterday --until yesterday` an empty instant. A
+date with a time, like `"3 hours ago"` or `2026-09-15 14:00`, is used as is.
 
 ## Who counts as you
 
@@ -71,6 +87,12 @@ The last seven days, in every repository under the current folder:
 
 ```
 didwhat
+```
+
+Yesterday, for a standup:
+
+```
+didwhat --since yesterday --until yesterday ~/code
 ```
 
 A closed period, saved to a file for a timesheet or a worklog. Dates without a
@@ -100,10 +122,11 @@ from another machine are in the report too:
 didwhat --fetch --since 2026-10-01 ~/code/client
 ```
 
-Only the commits, without the uncommitted and unpushed work:
+Only the commit subjects, without the file lists or the uncommitted and
+unpushed work:
 
 ```
-didwhat --no-status
+didwhat --no-status --max-files 0
 ```
 
 Repositories nested deeper than three folder levels:
@@ -115,7 +138,7 @@ didwhat --depth 5 ~/code
 ### With `--json`
 
 The JSON has one entry per repository in `repos`, each with its `commits`
-(`date`, `time`, `subject`, `refs`, `files`…), `merges`, `branch`,
+(`date`, `time`, `subject`, `refs`, `files`, `landed`…), `merges`, `branch`,
 `uncommitted` and `warnings`. With [jq](https://jqlang.org):
 
 Commits per day:
@@ -151,14 +174,14 @@ didwhat --json ~/code \
 | Option | |
 |---|---|
 | `[PATHS]...` | Folders to scan. Default: the current folder |
-| `-s, --since` | Start of the period, anything git understands (`2026-09-15`, `"2 weeks ago"`). Default: `"7 days ago"` |
-| `-u, --until` | End of the period |
+| `-s, --since` | Start of the period, anything git understands (`2026-09-15`, `yesterday`, `"2 weeks ago"`). Without a time of day it starts at midnight. Default: `"7 days ago"` |
+| `-u, --until` | End of the period. Without a time of day it runs to the end of that day |
 | `-a, --author` | Who counts as you; repeatable |
 | `-f, --fetch` | `git fetch --all` every repository first. Never prompts for credentials: a fetch that needs them is reported as a warning |
 | `--depth` | Folder levels to search for repositories. Default: 3 |
 | `--json` | JSON instead of Markdown |
 | `-o, --output` | Write to a file instead of printing |
-| `--max-files` | Files listed per commit. Default: 8 |
+| `--max-files` | Files listed per commit; `0` leaves them out. Default: 8 |
 | `--merges` | Also list other people's merges, and your own merges that only bring another branch in |
 | `--no-status` | Leave out uncommitted and unpushed work |
 

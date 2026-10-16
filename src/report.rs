@@ -91,10 +91,11 @@ pub fn collect(path: &Path, name: &str, options: &Options) -> RepoReport {
     } else {
         match git::log(path, &query(options, &patterns, false)) {
             Ok(commits) => {
-                report.commits = git::in_period(commits, since, until)
+                let commits: Vec<Commit> = git::in_period(commits, since, until)
                     .into_iter()
                     .filter(|c| options.merges || !git::is_sync_merge(c))
-                    .collect()
+                    .collect();
+                report.commits = git::fold_landed(commits, |c| git::patch_id(path, &c.hash))
             }
             Err(e) => report.warnings.push(format!("git log failed: {e}")),
         }
