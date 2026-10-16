@@ -65,6 +65,87 @@ both the name and the email:
 didwhat --since "2 weeks ago" --author sergio@client.com --author "Sergio Infante"
 ```
 
+## Examples
+
+The last seven days, in every repository under the current folder:
+
+```
+didwhat
+```
+
+A closed period, saved to a file for a timesheet or a worklog. Dates without a
+time cover the whole day at both ends:
+
+```
+didwhat --since 2026-09-01 --until 2026-09-30 ~/code/client -o september.md
+```
+
+Several folders in one report, for example two clients:
+
+```
+didwhat --since "2 weeks ago" ~/code/client-a ~/code/client-b
+```
+
+On Windows, from PowerShell, with the report written outside the repositories
+so it does not show up as an untracked file in them:
+
+```powershell
+didwhat --since 2026-09-29 C:\code\client -o $HOME\Desktop\didwhat.md
+```
+
+On a laptop you have not used for a while, fetch first so commits you pushed
+from another machine are in the report too:
+
+```
+didwhat --fetch --since 2026-10-01 ~/code/client
+```
+
+Only the commits, without the uncommitted and unpushed work:
+
+```
+didwhat --no-status
+```
+
+Repositories nested deeper than three folder levels:
+
+```
+didwhat --depth 5 ~/code
+```
+
+### With `--json`
+
+The JSON has one entry per repository in `repos`, each with its `commits`
+(`date`, `time`, `subject`, `refs`, `files`…), `merges`, `branch`,
+`uncommitted` and `warnings`. With [jq](https://jqlang.org):
+
+Commits per day:
+
+```sh
+didwhat --json --since 2026-10-01 ~/code \
+  | jq -r '[.repos[].commits[]] | group_by(.date) | reverse[] | "\(.[0].date) \(length)"'
+```
+
+Commits per repository, leaving out the ones with none:
+
+```sh
+didwhat --json --since 2026-10-01 ~/code \
+  | jq -r '.repos[] | select(.commits | length > 0) | "\(.name): \(.commits | length)"'
+```
+
+One line per commit, ready to paste into a standup:
+
+```sh
+didwhat --json --since 2026-10-15 ~/code \
+  | jq -r '.repos[] | .name as $repo | .commits[] | "\(.date) [\($repo)] \(.subject)"'
+```
+
+Repositories with work that has not left the machine:
+
+```sh
+didwhat --json ~/code \
+  | jq -r '.repos[] | select((.uncommitted | length > 0) or ((.branch // "") | test("ahead"))) | .name'
+```
+
 ## Options
 
 | Option | |
