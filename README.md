@@ -88,6 +88,27 @@ the point: it has to run on machines where you cannot install Python or Node.
 
 ## Install
 
+Every release on GitHub ships prebuilt binaries for Windows, macOS (Apple
+Silicon and Intel) and Linux (x86_64 and ARM), with one-line installers. No
+Rust toolchain needed.
+
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/neosergio/didwhat/releases/latest/download/didwhat-installer.ps1 | iex"
+```
+
+macOS and Linux:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/neosergio/didwhat/releases/latest/download/didwhat-installer.sh | sh
+```
+
+Or download the archive for your platform from the
+[releases page](https://github.com/neosergio/didwhat/releases) and put the
+binary anywhere on your `PATH`. That is the way to go on a locked-down machine
+where running an installer script is not allowed.
+
 From source, with a Rust toolchain:
 
 ```
