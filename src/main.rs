@@ -90,6 +90,16 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
 
+    // Checked before whole_day adds a time of day: git parses "monday
+    // 00:00:00" as today at midnight, which hides that it ignored "monday".
+    let first_repo = &repos[0].1;
+    for date in std::iter::once(&cli.since).chain(&cli.until) {
+        if let Err(e) = git::check_date(first_repo, date) {
+            eprintln!("didwhat: {e}");
+            return ExitCode::from(2);
+        }
+    }
+
     let options = Options {
         since: git::whole_day(&cli.since, false),
         until: cli.until.as_deref().map(|u| git::whole_day(u, true)),

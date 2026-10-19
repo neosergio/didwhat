@@ -86,6 +86,21 @@ impl Sandbox {
     }
 }
 
+impl Sandbox {
+    /// Runs didwhat expecting it to fail, and returns what it printed to
+    /// stderr.
+    fn didwhat_fails(&self, args: &[&str]) -> String {
+        let output = self
+            .command(env!("CARGO_BIN_EXE_didwhat"))
+            .current_dir(self.root())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "didwhat {args:?} succeeded");
+        String::from_utf8(output.stderr).unwrap()
+    }
+}
+
 const ADA: &str = "Ada Lovelace <ada@example.com>";
 const BOB: &str = "Bob <bob@example.com>";
 
@@ -261,4 +276,18 @@ fn a_squashed_branch_of_several_commits_is_listed_once() {
     );
     assert!(md.contains("2026-03-04 at "), "{md}");
     assert!(md.contains(", a squash of 3 commits"), "{md}");
+}
+
+#[test]
+fn a_date_git_does_not_understand_is_an_error() {
+    let sandbox = sample();
+    let err = sandbox.didwhat_fails(&["--since", "monday"]);
+    assert!(err.contains("git does not understand \"monday\""), "{err}");
+    let err = sandbox.didwhat_fails(&["--since", "2026-01-01", "--until", "someday"]);
+    assert!(err.contains("\"someday\""), "{err}");
+
+    sandbox.didwhat(&["--since", "last monday"]);
+    sandbox.didwhat(&["--since", "today"]);
+    sandbox.didwhat(&["--since", "0 days ago"]);
+    sandbox.didwhat(&["--since", "1 hour ago", "--until", "now"]);
 }

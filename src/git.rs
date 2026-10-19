@@ -347,6 +347,42 @@ const SUB_DAY: &[&str] = &[
     "seconds",
 ];
 
+/// Fails when git did not understand `date`.
+///
+/// Git reads a date it cannot parse as the current time, without an error, so
+/// `--since monday` (git wants `last monday`) would report nothing and not say
+/// why. A date that resolves to now and does not ask for it, the way `now`,
+/// `0 days ago` or `0 minutes ago` do, is taken as not understood.
+pub fn check_date(repo: &Path, date: &str) -> Result<(), String> {
+    let asks_for_now = date.split_whitespace().any(|word| word == "0");
+    if asks_for_now || mentions_time(date) {
+        return Ok(());
+    }
+    let (resolved, _) = window(repo, date, None)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    if (now - resolved).abs() <= 2 {
+        return Err(format!(
+            "git does not understand {date:?} as a date. Try one like 2026-09-15, \
+             yesterday, \"last monday\" or \"2 weeks ago\""
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `date` is more precise than a day: it has a time of day, a
+/// timestamp, or a word like `now` or `hours`.
+fn mentions_time(date: &str) -> bool {
+    let trimmed = date.trim();
+    trimmed.contains(':')
+        || trimmed.starts_with('@')
+        || trimmed
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| SUB_DAY.contains(&word.to_ascii_lowercase().as_str()))
+}
+
 /// A date with no time of day, like `2026-10-13`, `yesterday` or
 /// `2 weeks ago`, made to cover whole days: from the start of that day, or up
 /// to its end. Git would otherwise read it as that day at the current time of
@@ -354,12 +390,7 @@ const SUB_DAY: &[&str] = &[
 /// yesterday` an empty instant.
 pub fn whole_day(date: &str, end_of_day: bool) -> String {
     let trimmed = date.trim();
-    let has_time = trimmed.contains(':')
-        || trimmed.starts_with('@')
-        || trimmed
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|word| SUB_DAY.contains(&word.to_ascii_lowercase().as_str()));
-    if has_time || trimmed.is_empty() {
+    if trimmed.is_empty() || mentions_time(trimmed) {
         return date.to_string();
     }
     let time = if end_of_day { "23:59:59" } else { "00:00:00" };

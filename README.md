@@ -78,6 +78,10 @@ A date with no time of day covers whole days. `2026-09-15`, `yesterday` or
 morning, and make `--since yesterday --until yesterday` an empty instant. A
 date with a time, like `"3 hours ago"` or `2026-09-15 14:00`, is used as is.
 
+Git reads a date it does not understand as the current time, without an
+error: `monday` is one, git wants `last monday`. didwhat stops and says so
+instead of reporting an empty period.
+
 ## Who counts as you
 
 By default, each repository's own `user.name` and `user.email`. That is usually
