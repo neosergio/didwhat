@@ -1,6 +1,6 @@
 [package]
 name = "didwhat"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "What did I do? Your commits across every git repo under a folder, grouped by day."
 license = "MIT"
