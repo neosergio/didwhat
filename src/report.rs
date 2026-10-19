@@ -95,7 +95,11 @@ pub fn collect(path: &Path, name: &str, options: &Options) -> RepoReport {
                     .into_iter()
                     .filter(|c| options.merges || !git::is_sync_merge(c))
                     .collect();
-                report.commits = git::fold_landed(commits, |c| git::patch_id(path, &c.hash))
+                report.commits = git::fold_landed(
+                    commits,
+                    |base, tip| git::patch_id(path, base, tip),
+                    |hash| git::ancestors(path, hash, since),
+                )
             }
             Err(e) => report.warnings.push(format!("git log failed: {e}")),
         }

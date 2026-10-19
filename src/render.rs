@@ -102,6 +102,9 @@ fn commit_item(out: &mut String, commit: &Commit, mine: bool) {
             let _ = write!(out, " {}", landed.date);
         }
         let _ = write!(out, " at {}", landed.time);
+        if landed.commits > 1 {
+            let _ = write!(out, ", a squash of {} commits", landed.commits);
+        }
     }
     out.push('\n');
     for file in &commit.files {

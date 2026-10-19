@@ -225,3 +225,40 @@ fn a_squashed_pull_request_is_listed_once_with_where_it_landed() {
     assert!(md.contains("— *topic* → landed as `"), "{md}");
     assert!(md.contains("on *main* 2026-03-03 at "), "{md}");
 }
+
+#[test]
+fn a_squashed_branch_of_several_commits_is_listed_once() {
+    let sandbox = Sandbox::new();
+    let api = sandbox.repo("api");
+    sandbox.commit(&api, "base.txt", "init", ADA, "2026-03-01");
+    sandbox.git(&api, &["checkout", "-q", "-b", "topic"]);
+    sandbox.commit(&api, "a.txt", "feat: parse invoices", ADA, "2026-03-02");
+    sandbox.commit(&api, "b.txt", "test: cover invoices", ADA, "2026-03-02");
+    sandbox.commit(&api, "a.txt", "fix: parse dates", ADA, "2026-03-03");
+    sandbox.git(&api, &["checkout", "-q", "main"]);
+    // main moves on while the branch is open.
+    sandbox.commit(&api, "other.txt", "chore: unrelated", BOB, "2026-03-03");
+    sandbox.git(&api, &["merge", "-q", "--squash", "topic"]);
+    let status = sandbox
+        .command("git")
+        .arg("-C")
+        .arg(&api)
+        .args(["commit", "-q", "-m", "Invoices (#12)"])
+        .env("GIT_AUTHOR_DATE", "2026-03-04T12:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2026-03-04T12:00:00Z")
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let md = sandbox.didwhat(&["--since", "2026-03-02"]);
+    assert!(!md.contains("Invoices (#12)"), "{md}");
+    assert!(!md.contains("## 2026-03-04"), "{md}");
+    assert!(md.contains("feat: parse invoices"), "{md}");
+    assert!(md.contains("test: cover invoices"), "{md}");
+    assert!(
+        md.contains("fix: parse dates — *topic* → landed as `"),
+        "{md}"
+    );
+    assert!(md.contains("2026-03-04 at "), "{md}");
+    assert!(md.contains(", a squash of 3 commits"), "{md}");
+}

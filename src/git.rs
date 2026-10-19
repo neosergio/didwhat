@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -28,12 +28,19 @@ pub struct Commit {
     pub is_merge: bool,
     pub files: Vec<String>,
     pub files_total: usize,
-    /// The copy of this commit that landed later, typically when its pull
-    /// request was squashed or cherry-picked into the main branch.
+    /// The later commit that brought this one's changes into another branch,
+    /// typically its pull request squashed or cherry-picked into main. On a
+    /// branch of several commits it is set on the last one.
     pub landed: Option<Landed>,
+    /// Every file, before `--max-files` cuts the list.
+    #[serde(skip)]
+    pub all_files: Vec<String>,
+    #[serde(skip)]
+    pub parents: Vec<String>,
 }
 
-/// A later copy of a commit, with the same changes.
+/// A later commit with the same changes as a commit, or as a run of commits
+/// ending in it.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Landed {
     pub hash: String,
@@ -41,6 +48,8 @@ pub struct Landed {
     pub date: String,
     pub time: String,
     pub refs: Vec<String>,
+    /// How many commits it squashed: 1 for a copy of a single commit.
+    pub commits: usize,
 }
 
 /// What to ask `git log` for.
@@ -169,21 +178,20 @@ fn parse_record(record: &str, max_files: usize) -> Option<Commit> {
             .map(String::from)
             .collect(),
         is_merge: fields[7].split_whitespace().count() > 1,
+        parents: fields[7].split_whitespace().map(String::from).collect(),
         subject: fields[8..].join(&FIELD.to_string()),
         files_total: files.len(),
-        files: files.into_iter().take(max_files).collect(),
+        files: files.iter().take(max_files).cloned().collect(),
+        all_files: files,
         landed: None,
     })
 }
 
-/// The `git patch-id --stable` of a commit: the same for any two commits that
-/// make the same changes, whatever their message, date or parent.
-pub fn patch_id(repo: &Path, hash: &str) -> Option<String> {
-    let diff = run(
-        repo,
-        &["show", "--no-color", "--no-ext-diff", "--format=", hash],
-    )
-    .ok()?;
+/// The `git patch-id --stable` of the changes from `base` to `tip`: the same
+/// for any two ranges that make the same changes, whatever their messages,
+/// dates or parents.
+pub fn patch_id(repo: &Path, base: &str, tip: &str) -> Option<String> {
+    let diff = run(repo, &["diff", "--no-color", "--no-ext-diff", base, tip]).ok()?;
     let mut child = Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -202,59 +210,114 @@ pub fn patch_id(repo: &Path, hash: &str) -> Option<String> {
     Some(id)
 }
 
+/// The commits reachable from `hash` that were committed after `since`.
+pub fn ancestors(repo: &Path, hash: &str, since: i64) -> HashSet<String> {
+    let since = format!("--max-age={since}");
+    run(repo, &["rev-list", &since, hash])
+        .map(|out| out.lines().map(String::from).collect())
+        .unwrap_or_default()
+}
+
 /// Folds each commit that landed later as a copy, like a pull request squashed
-/// or cherry-picked into the main branch, into the commit it copies.
+/// or cherry-picked into main, into the commits it copies.
 ///
 /// Without this every change is listed twice: once when it was made on its
 /// branch and once when it landed. A copy has a new author date, so
-/// `in_period` keeps both. They are told apart by `patch_id`, which only runs
-/// for commits by the same author that touch as many files, starting with the
-/// same one.
+/// `in_period` keeps both.
+///
+/// The copied commits are a run that ends in some earlier commit and walks
+/// back through its parents: one commit for a cherry-pick or the squash of a
+/// one-commit branch, several for the squash of a longer one. A run matches
+/// when its changes, from the parent of its first commit to its last, have
+/// the same `patch_id(base, tip)` as the copy. Only runs that touch exactly the
+/// copy's files are compared, and only runs that are not already in the
+/// copy's own history, as `ancestors` says: on a linear history every earlier
+/// commit is. That keeps most of them from ever reaching git. The commits of
+/// the run stay listed, because each was work on its own day; the copy is
+/// dropped and recorded as `landed` on the last one.
 pub fn fold_landed(
     commits: Vec<Commit>,
-    patch_id: impl Fn(&Commit) -> Option<String>,
+    patch_id: impl Fn(&str, &str) -> Option<String>,
+    ancestors: impl Fn(&str) -> HashSet<String>,
 ) -> Vec<Commit> {
-    let key = |c: &Commit| {
-        (
-            c.author_email.clone(),
-            c.files_total,
-            c.files.first().cloned(),
-        )
+    let index: HashMap<&str, usize> = commits
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.hash.as_str(), i))
+        .collect();
+    let mut ids: HashMap<(String, String), Option<String>> = HashMap::new();
+    let mut id = |base: &str, tip: &str| {
+        ids.entry((base.to_string(), tip.to_string()))
+            .or_insert_with(|| patch_id(base, tip))
+            .clone()
     };
-    let mut groups: HashMap<_, Vec<usize>> = HashMap::new();
-    for (i, commit) in commits.iter().enumerate() {
-        if !commit.is_merge && commit.files_total > 0 {
-            groups.entry(key(commit)).or_default().push(i);
-        }
-    }
+
+    let mut by_age: Vec<usize> = (0..commits.len()).collect();
+    by_age.sort_by_key(|&i| commits[i].timestamp);
+    let foldable = |c: &Commit| !c.is_merge && c.parents.len() == 1 && !c.all_files.is_empty();
 
     let mut landed: HashMap<usize, Landed> = HashMap::new();
+    let mut taken = vec![false; commits.len()];
     let mut folded = vec![false; commits.len()];
-    for mut group in groups.into_values().filter(|g| g.len() > 1) {
-        group.sort_by_key(|&i| commits[i].timestamp);
-        let ids: Vec<Option<String>> = group.iter().map(|&i| patch_id(&commits[i])).collect();
-        for (later, later_id) in group.iter().zip(&ids).skip(1) {
-            let Some(later_id) = later_id else { continue };
-            let original = group.iter().zip(&ids).find(|(&i, id)| {
-                id.as_ref() == Some(later_id)
-                    && i != *later
-                    && commits[i].timestamp < commits[*later].timestamp
-                    && !folded[i]
-                    && !landed.contains_key(&i)
-            });
-            if let Some((&i, _)) = original {
-                let copy = &commits[*later];
-                landed.insert(
-                    i,
-                    Landed {
-                        hash: copy.hash.clone(),
-                        short: copy.short.clone(),
-                        date: copy.date.clone(),
-                        time: copy.time.clone(),
-                        refs: copy.refs.clone(),
-                    },
-                );
-                folded[*later] = true;
+    for &copy in &by_age {
+        let x = &commits[copy];
+        if !foldable(x) || taken[copy] {
+            continue;
+        }
+        let files: HashSet<&str> = x.all_files.iter().map(String::as_str).collect();
+        let mut history: Option<HashSet<String>> = None;
+        // The nearest earlier commits first: a copy lands after its work.
+        let tips = by_age
+            .iter()
+            .rev()
+            .copied()
+            .filter(|&t| t != copy && commits[t].timestamp < x.timestamp);
+        'tips: for tip in tips {
+            let mut run = Vec::new();
+            let mut touched: HashSet<&str> = HashSet::new();
+            let mut at = tip;
+            loop {
+                let c = &commits[at];
+                if at == copy
+                    || !foldable(c)
+                    || taken[at]
+                    || folded[at]
+                    || !c.all_files.iter().all(|f| files.contains(f.as_str()))
+                {
+                    break;
+                }
+                touched.extend(c.all_files.iter().map(String::as_str));
+                run.push(at);
+                let base = &c.parents[0];
+                if touched.len() == files.len() {
+                    let history = history.get_or_insert_with(|| ancestors(&x.hash));
+                    if history.contains(&commits[tip].hash) {
+                        continue 'tips;
+                    }
+                    let same = id(base, &commits[tip].hash);
+                    if same.is_some() && same == id(&x.parents[0], &x.hash) {
+                        landed.insert(
+                            tip,
+                            Landed {
+                                hash: x.hash.clone(),
+                                short: x.short.clone(),
+                                date: x.date.clone(),
+                                time: x.time.clone(),
+                                refs: x.refs.clone(),
+                                commits: run.len(),
+                            },
+                        );
+                        for &i in &run {
+                            taken[i] = true;
+                        }
+                        folded[copy] = true;
+                        break 'tips;
+                    }
+                }
+                match index.get(base.as_str()) {
+                    Some(&parent) => at = parent,
+                    None => break,
+                }
             }
         }
     }
@@ -463,35 +526,114 @@ mod tests {
         assert_eq!(whole_day("@1792000000", false), "@1792000000");
     }
 
-    fn change(hash: &str, timestamp: i64, files: &[&str]) -> Commit {
+    fn change(hash: &str, parent: &str, timestamp: i64, files: &[&str]) -> Commit {
+        let files: Vec<String> = files.iter().map(|f| f.to_string()).collect();
         Commit {
             hash: hash.into(),
             short: hash.into(),
             timestamp,
-            author_email: "ada@example.com".into(),
-            files: files.iter().map(|f| f.to_string()).collect(),
+            parents: vec![parent.into()],
             files_total: files.len(),
+            files: files.clone(),
+            all_files: files,
             ..Default::default()
         }
     }
 
-    #[test]
-    fn fold_landed_merges_later_copies_into_the_original() {
-        // Newest first, as git log lists them. "b-landed" is "b" squashed into
-        // main; "c" touches the same file but makes a different change.
-        let commits = vec![
-            change("b-landed", 300, &["x.rs"]),
-            change("c", 250, &["x.rs"]),
-            change("b", 200, &["x.rs"]),
-            change("a", 100, &["y.rs"]),
-        ];
-        let patch = |c: &Commit| Some(c.hash.trim_end_matches("-landed").to_string());
-        let kept = fold_landed(commits, patch);
+    /// A fake `patch_id`: every range is different, except the pairs given.
+    fn same_changes(pairs: &[(&str, &str, &str, &str)]) -> impl Fn(&str, &str) -> Option<String> {
+        let pairs: Vec<(String, String)> = pairs
+            .iter()
+            .flat_map(|(b1, t1, b2, t2)| {
+                let key = format!("{b1}..{t1}");
+                [(key.clone(), key.clone()), (format!("{b2}..{t2}"), key)]
+            })
+            .collect();
+        move |base, tip| {
+            let range = format!("{base}..{tip}");
+            let same = pairs.iter().find(|(r, _)| *r == range).map(|(_, id)| id);
+            Some(same.cloned().unwrap_or(range))
+        }
+    }
 
-        let hashes: Vec<&str> = kept.iter().map(|c| c.hash.as_str()).collect();
-        assert_eq!(hashes, ["c", "b", "a"]);
-        assert_eq!(kept[1].landed.as_ref().unwrap().hash, "b-landed");
+    fn no_history(_: &str) -> HashSet<String> {
+        HashSet::new()
+    }
+
+    fn hashes(commits: &[Commit]) -> Vec<&str> {
+        commits.iter().map(|c| c.hash.as_str()).collect()
+    }
+
+    #[test]
+    fn fold_landed_merges_a_copy_into_the_commit_it_copies() {
+        // Newest first, as git log lists them. "b-landed" is "b" squashed into
+        // main; "c", after "b" on its branch, touches the same file but makes a
+        // different change.
+        let commits = vec![
+            change("b-landed", "main", 300, &["x.rs"]),
+            change("c", "b", 250, &["x.rs"]),
+            change("b", "a", 200, &["x.rs"]),
+            change("a", "root", 100, &["y.rs"]),
+        ];
+        let kept = fold_landed(
+            commits,
+            same_changes(&[("a", "b", "main", "b-landed")]),
+            no_history,
+        );
+
+        assert_eq!(hashes(&kept), ["c", "b", "a"]);
+        let landed = kept[1].landed.as_ref().unwrap();
+        assert_eq!((landed.hash.as_str(), landed.commits), ("b-landed", 1));
         assert!(kept[0].landed.is_none());
+    }
+
+    #[test]
+    fn fold_landed_merges_a_squashed_branch_into_its_last_commit() {
+        // "t1" and "t2" on a branch off "base", then squashed into main as "s".
+        let commits = vec![
+            change("s", "main", 300, &["x.rs", "y.rs"]),
+            change("t2", "t1", 200, &["y.rs"]),
+            change("t1", "base", 100, &["x.rs"]),
+        ];
+        let kept = fold_landed(
+            commits,
+            same_changes(&[("base", "t2", "main", "s")]),
+            no_history,
+        );
+
+        assert_eq!(hashes(&kept), ["t2", "t1"]);
+        let landed = kept[0].landed.as_ref().unwrap();
+        assert_eq!((landed.hash.as_str(), landed.commits), ("s", 2));
+        assert!(kept[1].landed.is_none());
+    }
+
+    #[test]
+    fn fold_landed_keeps_a_commit_whose_changes_no_run_made() {
+        let commits = vec![
+            change("s", "main", 300, &["x.rs", "y.rs"]),
+            change("t2", "t1", 200, &["y.rs"]),
+            change("t1", "base", 100, &["x.rs"]),
+        ];
+        let kept = fold_landed(commits, same_changes(&[]), no_history);
+        assert_eq!(hashes(&kept), ["s", "t2", "t1"]);
+        assert!(kept.iter().all(|c| c.landed.is_none()));
+    }
+
+    #[test]
+    fn fold_landed_skips_commits_already_in_the_copys_history() {
+        // A revert of a revert brings back the same changes as "a", but "a"
+        // is its ancestor: it was never a copy.
+        let commits = vec![
+            change("a-again", "revert", 300, &["x.rs"]),
+            change("a", "root", 100, &["x.rs"]),
+        ];
+        let history = |_: &str| HashSet::from(["a".to_string(), "revert".to_string()]);
+        let kept = fold_landed(
+            commits,
+            same_changes(&[("root", "a", "revert", "a-again")]),
+            history,
+        );
+        assert_eq!(hashes(&kept), ["a-again", "a"]);
     }
 
     #[test]

@@ -58,9 +58,19 @@ once, on the day you made it, and says where and when it landed:
 - 10:02 `a1a3ed8` feat: add form guidance to the tours — *fix/tour-wording* → landed as `75bd515` at 10:24
 ```
 
-The two are matched by `git patch-id`, so a squash of a single commit is
-recognized whatever its message says. A squash of several commits makes
-changes no single commit made, and is listed on its own.
+The same goes for a branch of several commits squashed into one: its commits
+stay listed, each on its own day, and the last one says where they landed and
+how many went into the squash:
+
+```markdown
+- 13:18 `94df89d` docs: document the tour conventions — *feat/onboarding-tours* → landed as `fa5be5b` at 13:38, a squash of 7 commits
+```
+
+A copy is matched by `git patch-id`, so it is recognized whatever its message
+says: its changes must be exactly those of one of your commits, or of a run of
+them on the same branch. A pull request squashed together with someone else's
+commits, or changed while merging, makes changes none of your runs made, and
+is listed on its own.
 
 A date with no time of day covers whole days. `2026-09-15`, `yesterday` or
 `2 weeks ago` start at midnight in `--since` and run to the end of the day in
